@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import requests
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -38,8 +39,11 @@ def add_to_notion(database_id, properties):
         "parent": {"database_id": database_id},
         "properties": properties
     }
+    print(f"[Notion] Sending to DB: {database_id}", flush=True)
+    print(f"[Notion] Properties: {properties}", flush=True)
     response = requests.post(url, json=payload, headers=headers)
-    app.logger.info(f"[Notion] status={response.status_code} body={response.text}")
+    print(f"[Notion] Status: {response.status_code}", flush=True)
+    print(f"[Notion] Response: {response.text}", flush=True)
     return response.status_code == 200
 
 
@@ -52,7 +56,7 @@ def extract_url(text):
 def callback():
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
-    app.logger.info(f"[Webhook] body: {body}")
+    print(f"[Webhook] Received: {body}", flush=True)
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -63,11 +67,14 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     raw_text = event.message.text
+    print(f"[MSG] raw_text: {raw_text}", flush=True)
 
     if not raw_text.startswith(f'@{BOT_NAME}'):
+        print(f"[MSG] Not a mention, ignoring", flush=True)
         return
 
     msg_text = clean_mention(raw_text, BOT_NAME)
+    print(f"[MSG] cleaned: {msg_text}", flush=True)
 
     if not msg_text:
         line_bot_api.reply_message(
@@ -81,7 +88,8 @@ def handle_message(event):
             event.source.group_id, event.source.user_id
         )
         sender_name = profile.display_name
-    except Exception:
+    except Exception as e:
+        print(f"[MSG] get_profile error: {e}", flush=True)
         sender_name = "未知使用者"
 
     title = msg_text[:30] + ("..." if len(msg_text) > 30 else "")
