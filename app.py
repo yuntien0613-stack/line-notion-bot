@@ -16,15 +16,14 @@ NOTION_DB_IDEA     = os.getenv('NOTION_DB_IDEA')
 NOTION_DB_DESIGN   = os.getenv('NOTION_DB_DESIGN')
 NOTION_DB_RESOURCE = os.getenv('NOTION_DB_RESOURCE')
 
-BOT_NAME = os.getenv('BOT_NAME', 'LineBot')  # 你的 Bot 顯示名稱
+BOT_NAME = os.getenv('BOT_NAME', 'AI小幫手')
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 
 def clean_mention(text, bot_name):
-    """移除開頭的 @BotName 前綴"""
-    pattern = rf'^@{re.escape(bot_name)}\s*'
+    pattern = rf'^@{re.escape(bot_name)}[\s\u3000]*'
     return re.sub(pattern, '', text).strip()
 
 
@@ -52,7 +51,7 @@ def extract_url(text):
 def callback():
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
-    app.logger.info(f"[Webhook received] body: {body}")  # 診斷用
+    app.logger.info(f"[Webhook received] body: {body}")
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -64,21 +63,18 @@ def callback():
 def handle_message(event):
     raw_text = event.message.text
 
-    # 只處理有 @mention Bot 的訊息（群組中必須 @mention 才會觸發）
     if not raw_text.startswith(f'@{BOT_NAME}'):
-        return  # 靜默忽略非 @mention 訊息
+        return
 
-    # 清除 @mention 前綴，取得實際內容
     msg_text = clean_mention(raw_text, BOT_NAME)
 
     if not msg_text:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="請在 @mention 後面加上要儲存的內容。\n例如：@Bot #創意 今天想到一個好點子")
+            TextSendMessage(text="請在 @AI小幫手 後面加上內容。\n例如：@AI小幫手 #創意 今天想到一個好點子")
         )
         return
 
-    # 取得發送者名稱
     try:
         profile = line_bot_api.get_group_member_profile(
             event.source.group_id, event.source.user_id
@@ -91,7 +87,6 @@ def handle_message(event):
     success = False
     reply_msg = ""
 
-    # 用 hashtag 判斷要存入哪個資料庫
     if "#創意" in msg_text:
         properties = {
             "標題":  {"title":     [{"text": {"content": title}}]},
@@ -101,10 +96,10 @@ def handle_message(event):
         success = add_to_notion(NOTION_DB_IDEA, properties)
         reply_msg = f"✅ 已將創意整理至 Notion 創意池！\n提出者：{sender_name}"
 
-    elif "#設計" in msg_text or "#功能" in msg_text:
+    elif "#設計" in msg_text or "#要的功能" in msg_text or "#不要的功能" in msg_text:
         category = "未分類"
-        if "#設計" in msg_text:       category = "設計參考"
-        elif "#要的功能" in msg_text:  category = "要的功能"
+        if "#設計" in msg_text:        category = "設計參考"
+        elif "#要的功能" in msg_text:   category = "要的功能"
         elif "#不要的功能" in msg_text: category = "不要的功能"
 
         properties = {
@@ -128,16 +123,17 @@ def handle_message(event):
         reply_msg = f"✅ 已將資源整理至 Notion 資源池！\n提出者：{sender_name}"
 
     else:
-        # 沒有對應指令，回傳使用說明
-        reply_msg = (
-            "❓ 請加上分類標籤：\n"
-            "  #創意 → 創意池\n"
-            "  #設計 / #要的功能 / #不要的功能 → 設計池\n"
-            "  #資源（或直接貼網址）→ 資源池\n\n"
-            "範例：@Bot #創意 想做一個自動存 Notion 的機器人"
-        )
         line_bot_api.reply_message(
-            event.reply_token, TextSendMessage(text=reply_msg)
+            event.reply_token,
+            TextSendMessage(text=(
+                "❓ 請加上分類標籤：\n"
+                "  #創意 → 創意池\n"
+                "  #設計 → 設計池\n"
+                "  #要的功能 → 設計池\n"
+                "  #不要的功能 → 設計池\n"
+                "  #資源（或直接貼網址）→ 資源池\n\n"
+                "範例：@AI小幫手 #創意 想做一個自動存 Notion 的機器人"
+            ))
         )
         return
 
