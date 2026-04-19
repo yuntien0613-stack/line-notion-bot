@@ -98,7 +98,7 @@ def handle_message(event):
 
     if "#創意" in msg_text:
         properties = {
-            "標題": {"title": [{"text": {"content": title}}]},
+            "標題 (Title)": {"title": [{"text": {"content": title}}]},
             "內容 (Content)": {"rich_text": [{"text": {"content": msg_text}}]},
             "提出者 (Sender)": {"rich_text": [{"text": {"content": sender_name}}]},
         }
@@ -112,7 +112,7 @@ def handle_message(event):
         elif "#不要的功能" in msg_text:  category = "不要的功能"
 
         properties = {
-            "標題": {"title": [{"text": {"content": title}}]},
+            "標題 (Title)": {"title": [{"text": {"content": title}}]},
             "內容 (Content)": {"rich_text": [{"text": {"content": msg_text}}]},
             "分類 (Category)": {"select": {"name": category}},
             "提出者 (Sender)": {"rich_text": [{"text": {"content": sender_name}}]},
