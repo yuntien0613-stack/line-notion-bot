@@ -39,6 +39,7 @@ def add_to_notion(database_id, properties):
         "properties": properties
     }
     response = requests.post(url, json=payload, headers=headers)
+    app.logger.info(f"[Notion] status={response.status_code} body={response.text}")
     return response.status_code == 200
 
 
@@ -51,7 +52,7 @@ def extract_url(text):
 def callback():
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
-    app.logger.info(f"[Webhook received] body: {body}")
+    app.logger.info(f"[Webhook] body: {body}")
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -89,24 +90,24 @@ def handle_message(event):
 
     if "#創意" in msg_text:
         properties = {
-            "標題":  {"title":     [{"text": {"content": title}}]},
-            "內容":  {"rich_text": [{"text": {"content": msg_text}}]},
-            "提出者": {"rich_text": [{"text": {"content": sender_name}}]},
+            "標題": {"title": [{"text": {"content": title}}]},
+            "內容 (Content)": {"rich_text": [{"text": {"content": msg_text}}]},
+            "提出者 (Sender)": {"rich_text": [{"text": {"content": sender_name}}]},
         }
         success = add_to_notion(NOTION_DB_IDEA, properties)
         reply_msg = f"✅ 已將創意整理至 Notion 創意池！\n提出者：{sender_name}"
 
     elif "#設計" in msg_text or "#要的功能" in msg_text or "#不要的功能" in msg_text:
         category = "未分類"
-        if "#設計" in msg_text:        category = "設計參考"
-        elif "#要的功能" in msg_text:   category = "要的功能"
-        elif "#不要的功能" in msg_text: category = "不要的功能"
+        if "#設計" in msg_text:         category = "設計參考"
+        elif "#要的功能" in msg_text:    category = "要的功能"
+        elif "#不要的功能" in msg_text:  category = "不要的功能"
 
         properties = {
-            "標題":  {"title":     [{"text": {"content": title}}]},
-            "內容":  {"rich_text": [{"text": {"content": msg_text}}]},
-            "分類":  {"select":    {"name": category}},
-            "提出者": {"rich_text": [{"text": {"content": sender_name}}]},
+            "標題": {"title": [{"text": {"content": title}}]},
+            "內容 (Content)": {"rich_text": [{"text": {"content": msg_text}}]},
+            "分類 (Category)": {"select": {"name": category}},
+            "提出者 (Sender)": {"rich_text": [{"text": {"content": sender_name}}]},
         }
         success = add_to_notion(NOTION_DB_DESIGN, properties)
         reply_msg = f"✅ 已存入設計池（分類：{category}）\n提出者：{sender_name}"
@@ -114,10 +115,9 @@ def handle_message(event):
     elif "#資源" in msg_text or extract_url(msg_text):
         url = extract_url(msg_text)
         properties = {
-            "標題":  {"title":     [{"text": {"content": title}}]},
-            "說明":  {"rich_text": [{"text": {"content": msg_text}}]},
-            "連結":  {"url": url} if url else {"url": None},
-            "提出者": {"rich_text": [{"text": {"content": sender_name}}]},
+            "名稱": {"title": [{"text": {"content": title}}]},
+            "網站": {"url": url} if url else {"url": None},
+            "聯絡人": {"rich_text": [{"text": {"content": sender_name}}]},
         }
         success = add_to_notion(NOTION_DB_RESOURCE, properties)
         reply_msg = f"✅ 已將資源整理至 Notion 資源池！\n提出者：{sender_name}"
