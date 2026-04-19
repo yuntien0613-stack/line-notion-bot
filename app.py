@@ -1,6 +1,6 @@
 import os
 import re
-import sys
+import json
 import requests
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -12,6 +12,7 @@ app = Flask(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 NOTION_TOKEN = os.getenv('NOTION_TOKEN')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 NOTION_DB_IDEA     = os.getenv('NOTION_DB_IDEA')
 NOTION_DB_DESIGN   = os.getenv('NOTION_DB_DESIGN')
@@ -26,6 +27,74 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 def clean_mention(text, bot_name):
     pattern = rf'^@{re.escape(bot_name)}[\s\u3000]*'
     return re.sub(pattern, '', text).strip()
+
+
+def call_gemini(prompt):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+    response = requests.post(url, json=payload)
+    print(f"[Gemini] Status: {response.status_code}", flush=True)
+    print(f"[Gemini] Response: {response.text}", flush=True)
+    if response.status_code == 200:
+        data = response.json()
+        return data['candidates'][0]['content']['parts'][0]['text'].strip()
+    return None
+
+
+def ai_classify_idea(msg_text):
+    prompt = f"""你是一個創意整理助手。根據以下訊息內容，請回傳 JSON 格式：
+{{
+  "title": "簡短標題（15字以內）",
+  "summary": "整理後的內容摘要（50字以內）",
+  "status": "To Do"
+}}
+status 固定填 "To Do"。
+只回傳 JSON，不要其他文字。
+
+訊息內容：{msg_text}"""
+    result = call_gemini(prompt)
+    if result:
+        result = result.replace('```json', '').replace('```', '').strip()
+        return json.loads(result)
+    return None
+
+
+def ai_classify_design(msg_text):
+    prompt = f"""你是一個設計分類助手。根據以下訊息內容，請回傳 JSON 格式：
+{{
+  "title": "簡短標題（15字以內）",
+  "summary": "整理後的內容摘要（50字以內）",
+  "category": "分類名稱"
+}}
+category 只能從以下選項選一個：設計參考、要的功能、不要的功能、未分類
+只回傳 JSON，不要其他文字。
+
+訊息內容：{msg_text}"""
+    result = call_gemini(prompt)
+    if result:
+        result = result.replace('```json', '').replace('```', '').strip()
+        return json.loads(result)
+    return None
+
+
+def ai_classify_resource(msg_text):
+    prompt = f"""你是一個文化資源分類助手。根據以下訊息內容，請回傳 JSON 格式：
+{{
+  "title": "單位或資源名稱（15字以內）",
+  "summary": "整理後的說明（50字以內）",
+  "theme": "主題類別"
+}}
+theme 只能從以下選項選一個：工藝 & 職人、聚落 & 社區、文化館所、生活美學、當代藝術 & 設計
+只回傳 JSON，不要其他文字。
+
+訊息內容：{msg_text}"""
+    result = call_gemini(prompt)
+    if result:
+        result = result.replace('```json', '').replace('```', '').strip()
+        return json.loads(result)
+    return None
 
 
 def add_to_notion(database_id, properties):
@@ -70,7 +139,6 @@ def handle_message(event):
     print(f"[MSG] raw_text: {raw_text}", flush=True)
 
     if not raw_text.startswith(f'@{BOT_NAME}'):
-        print(f"[MSG] Not a mention, ignoring", flush=True)
         return
 
     msg_text = clean_mention(raw_text, BOT_NAME)
@@ -79,7 +147,13 @@ def handle_message(event):
     if not msg_text:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="請在 @AI小幫手 後面加上內容。\n例如：@AI小幫手 #創意 今天想到一個好點子")
+            TextSendMessage(text=(
+                "請在 @AI小幫手 後面加上內容。\n\n"
+                "📌 使用方式：\n"
+                "  創意想法 → 直接說內容\n"
+                "  設計相關 → #設計 / #要的功能 / #不要的功能\n"
+                "  資源連結 → 貼網址或說明資源單位"
+            ))
         )
         return
 
@@ -92,58 +166,72 @@ def handle_message(event):
         print(f"[MSG] get_profile error: {e}", flush=True)
         sender_name = "未知使用者"
 
-    title = msg_text[:30] + ("..." if len(msg_text) > 30 else "")
     success = False
     reply_msg = ""
 
-    if "#創意" in msg_text:
-        properties = {
-            "標題 (Title)": {"title": [{"text": {"content": title}}]},
-            "內容 (Content)": {"rich_text": [{"text": {"content": msg_text}}]},
-            "提出者 (Sender)": {"rich_text": [{"text": {"content": sender_name}}]},
-        }
-        success = add_to_notion(NOTION_DB_IDEA, properties)
-        reply_msg = f"✅ 已將創意整理至 Notion 創意池！\n提出者：{sender_name}"
-
-    elif "#設計" in msg_text or "#要的功能" in msg_text or "#不要的功能" in msg_text:
-        category = "未分類"
-        if "#設計" in msg_text:         category = "設計參考"
-        elif "#要的功能" in msg_text:    category = "要的功能"
-        elif "#不要的功能" in msg_text:  category = "不要的功能"
+    # 設計池（有 hashtag 的）
+    if "#設計" in msg_text or "#要的功能" in msg_text or "#不要的功能" in msg_text:
+        ai = ai_classify_design(msg_text)
+        if ai:
+            title = ai.get('title', msg_text[:30])
+            summary = ai.get('summary', msg_text)
+            category = ai.get('category', '未分類')
+        else:
+            title = msg_text[:30]
+            summary = msg_text
+            category = "未分類"
 
         properties = {
             "標題 (Title)": {"title": [{"text": {"content": title}}]},
-            "內容 (Content)": {"rich_text": [{"text": {"content": msg_text}}]},
+            "內容 (Content)": {"rich_text": [{"text": {"content": summary}}]},
             "分類 (Category)": {"select": {"name": category}},
             "提出者 (Sender)": {"rich_text": [{"text": {"content": sender_name}}]},
         }
         success = add_to_notion(NOTION_DB_DESIGN, properties)
-        reply_msg = f"✅ 已存入設計池（分類：{category}）\n提出者：{sender_name}"
+        reply_msg = f"✅ 已存入設計池\n分類：{category}\n標題：{title}\n提出者：{sender_name}"
 
-    elif "#資源" in msg_text or extract_url(msg_text):
+    # 資源池（有網址的）
+    elif extract_url(msg_text):
         url = extract_url(msg_text)
+        ai = ai_classify_resource(msg_text)
+        if ai:
+            title = ai.get('title', msg_text[:30])
+            summary = ai.get('summary', msg_text)
+            theme = ai.get('theme', '未分類')
+        else:
+            title = msg_text[:30]
+            summary = msg_text
+            theme = "未分類"
+
         properties = {
             "名稱": {"title": [{"text": {"content": title}}]},
-            "網站": {"url": url} if url else {"url": None},
+            "網站": {"url": url},
+            "主題類別": {"select": {"name": theme}},
             "聯絡人": {"rich_text": [{"text": {"content": sender_name}}]},
         }
         success = add_to_notion(NOTION_DB_RESOURCE, properties)
-        reply_msg = f"✅ 已將資源整理至 Notion 資源池！\n提出者：{sender_name}"
+        reply_msg = f"✅ 已存入資源池\n主題：{theme}\n標題：{title}\n提出者：{sender_name}"
 
+    # 創意池（其他所有訊息）
     else:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=(
-                "❓ 請加上分類標籤：\n"
-                "  #創意 → 創意池\n"
-                "  #設計 → 設計池\n"
-                "  #要的功能 → 設計池\n"
-                "  #不要的功能 → 設計池\n"
-                "  #資源（或直接貼網址）→ 資源池\n\n"
-                "範例：@AI小幫手 #創意 想做一個自動存 Notion 的機器人"
-            ))
-        )
-        return
+        ai = ai_classify_idea(msg_text)
+        if ai:
+            title = ai.get('title', msg_text[:30])
+            summary = ai.get('summary', msg_text)
+            status = ai.get('status', 'To Do')
+        else:
+            title = msg_text[:30]
+            summary = msg_text
+            status = "To Do"
+
+        properties = {
+            "標題 (Title)": {"title": [{"text": {"content": title}}]},
+            "內容 (Content)": {"rich_text": [{"text": {"content": summary}}]},
+            "狀態 (Status)": {"status": {"name": status}},
+            "提出者 (Sender)": {"rich_text": [{"text": {"content": sender_name}}]},
+        }
+        success = add_to_notion(NOTION_DB_IDEA, properties)
+        reply_msg = f"✅ 已存入創意池\n標題：{title}\n提出者：{sender_name}"
 
     if success:
         line_bot_api.reply_message(
@@ -152,7 +240,7 @@ def handle_message(event):
     else:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="⚠️ 寫入 Notion 失敗，請確認 Token 與 Database ID 設定正確。")
+            TextSendMessage(text="⚠️ 寫入 Notion 失敗，請確認設定正確。")
         )
 
 
