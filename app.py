@@ -8,26 +8,27 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 app = Flask(__name__)
 
-# 從環境變數讀取設定
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 NOTION_TOKEN = os.getenv('NOTION_TOKEN')
 
-# 三個群組的 Notion Database ID
-NOTION_DB_IDEA = os.getenv('NOTION_DB_IDEA')
-NOTION_DB_DESIGN = os.getenv('NOTION_DB_DESIGN')
+NOTION_DB_IDEA     = os.getenv('NOTION_DB_IDEA')
+NOTION_DB_DESIGN   = os.getenv('NOTION_DB_DESIGN')
 NOTION_DB_RESOURCE = os.getenv('NOTION_DB_RESOURCE')
 
-# 三個 LINE 群組的 ID (部署後再補填)
-GROUP_ID_IDEA = os.getenv('GROUP_ID_IDEA')
-GROUP_ID_DESIGN = os.getenv('GROUP_ID_DESIGN')
-GROUP_ID_RESOURCE = os.getenv('GROUP_ID_RESOURCE')
+BOT_NAME = os.getenv('BOT_NAME', 'LineBot')  # 你的 Bot 顯示名稱
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
+
+def clean_mention(text, bot_name):
+    """移除開頭的 @BotName 前綴"""
+    pattern = rf'^@{re.escape(bot_name)}\s*'
+    return re.sub(pattern, '', text).strip()
+
+
 def add_to_notion(database_id, properties):
-    """將資料寫入 Notion 資料庫"""
     url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -38,87 +39,118 @@ def add_to_notion(database_id, properties):
         "parent": {"database_id": database_id},
         "properties": properties
     }
-    response = requests.post(url, json=payload, headers=headers )
+    response = requests.post(url, json=payload, headers=headers)
     return response.status_code == 200
 
+
 def extract_url(text):
-    """從文字中萃取第一個 URL"""
-    url_pattern = r'https?://[^\s]+'
-    match = re.search(url_pattern, text )
+    match = re.search(r'https?://[^\s]+', text)
     return match.group(0) if match else None
+
 
 @app.route("/callback", methods=['POST'])
 def callback():
-    # 取得 LINE Webhook 簽名並驗證
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
+    app.logger.info(f"[Webhook received] body: {body}")  # 診斷用
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
     return 'OK'
 
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    msg_text = event.message.text
-    source_id = event.source.group_id if hasattr(event.source, 'group_id') else event.source.user_id
-    
+    raw_text = event.message.text
+
+    # 只處理有 @mention Bot 的訊息（群組中必須 @mention 才會觸發）
+    if not raw_text.startswith(f'@{BOT_NAME}'):
+        return  # 靜默忽略非 @mention 訊息
+
+    # 清除 @mention 前綴，取得實際內容
+    msg_text = clean_mention(raw_text, BOT_NAME)
+
+    if not msg_text:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="請在 @mention 後面加上要儲存的內容。\n例如：@Bot #創意 今天想到一個好點子")
+        )
+        return
+
     # 取得發送者名稱
     try:
-        profile = line_bot_api.get_group_member_profile(event.source.group_id, event.source.user_id)
+        profile = line_bot_api.get_group_member_profile(
+            event.source.group_id, event.source.user_id
+        )
         sender_name = profile.display_name
-    except:
+    except Exception:
         sender_name = "未知使用者"
 
-    # 準備 Notion 資料屬性
-    title = msg_text[:20] + ("..." if len(msg_text) > 20 else "")
-    
+    title = msg_text[:30] + ("..." if len(msg_text) > 30 else "")
     success = False
     reply_msg = ""
 
-    # 根據 Group ID 判斷要存入哪個資料庫
-    if source_id == GROUP_ID_IDEA:
+    # 用 hashtag 判斷要存入哪個資料庫
+    if "#創意" in msg_text:
         properties = {
-            "標題": {"title": [{"text": {"content": title}}]},
-            "內容": {"rich_text": [{"text": {"content": msg_text}}]},
-            "提出者": {"rich_text": [{"text": {"content": sender_name}}]}
+            "標題":  {"title":     [{"text": {"content": title}}]},
+            "內容":  {"rich_text": [{"text": {"content": msg_text}}]},
+            "提出者": {"rich_text": [{"text": {"content": sender_name}}]},
         }
         success = add_to_notion(NOTION_DB_IDEA, properties)
-        reply_msg = "✅ 已將創意整理至 Notion 創意池！"
+        reply_msg = f"✅ 已將創意整理至 Notion 創意池！\n提出者：{sender_name}"
 
-    elif source_id == GROUP_ID_DESIGN:
-        # 簡單分類邏輯
+    elif "#設計" in msg_text or "#功能" in msg_text:
         category = "未分類"
-        if "#設計" in msg_text: category = "設計參考"
-        elif "#要的功能" in msg_text: category = "要的功能"
+        if "#設計" in msg_text:       category = "設計參考"
+        elif "#要的功能" in msg_text:  category = "要的功能"
         elif "#不要的功能" in msg_text: category = "不要的功能"
 
         properties = {
-            "標題": {"title": [{"text": {"content": title}}]},
-            "內容": {"rich_text": [{"text": {"content": msg_text}}]},
-            "分類": {"select": {"name": category}},
-            "提出者": {"rich_text": [{"text": {"content": sender_name}}]}
+            "標題":  {"title":     [{"text": {"content": title}}]},
+            "內容":  {"rich_text": [{"text": {"content": msg_text}}]},
+            "分類":  {"select":    {"name": category}},
+            "提出者": {"rich_text": [{"text": {"content": sender_name}}]},
         }
         success = add_to_notion(NOTION_DB_DESIGN, properties)
-        reply_msg = f"✅ 已將設計/功能整理至 Notion 平台設計池（分類：{category}）！"
+        reply_msg = f"✅ 已存入設計池（分類：{category}）\n提出者：{sender_name}"
 
-    elif source_id == GROUP_ID_RESOURCE:
+    elif "#資源" in msg_text or extract_url(msg_text):
         url = extract_url(msg_text)
         properties = {
-            "標題": {"title": [{"text": {"content": title}}]},
-            "說明": {"rich_text": [{"text": {"content": msg_text}}]},
-            "連結": {"url": url} if url else {"url": None},
-            "提出者": {"rich_text": [{"text": {"content": sender_name}}]}
+            "標題":  {"title":     [{"text": {"content": title}}]},
+            "說明":  {"rich_text": [{"text": {"content": msg_text}}]},
+            "連結":  {"url": url} if url else {"url": None},
+            "提出者": {"rich_text": [{"text": {"content": sender_name}}]},
         }
         success = add_to_notion(NOTION_DB_RESOURCE, properties)
-        reply_msg = "✅ 已將資源連結整理至 Notion 資源池！"
+        reply_msg = f"✅ 已將資源整理至 Notion 資源池！\n提出者：{sender_name}"
 
-    # 如果不在預設群組內，回傳 Group ID 供使用者設定
     else:
-        reply_msg = f"目前群組 ID 為：{source_id}\n請將此 ID 設定至環境變數中以啟用自動整理功能。"
+        # 沒有對應指令，回傳使用說明
+        reply_msg = (
+            "❓ 請加上分類標籤：\n"
+            "  #創意 → 創意池\n"
+            "  #設計 / #要的功能 / #不要的功能 → 設計池\n"
+            "  #資源（或直接貼網址）→ 資源池\n\n"
+            "範例：@Bot #創意 想做一個自動存 Notion 的機器人"
+        )
+        line_bot_api.reply_message(
+            event.reply_token, TextSendMessage(text=reply_msg)
+        )
+        return
 
-    if success or "目前群組 ID" in reply_msg:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_msg))
+    if success:
+        line_bot_api.reply_message(
+            event.reply_token, TextSendMessage(text=reply_msg)
+        )
+    else:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="⚠️ 寫入 Notion 失敗，請確認 Token 與 Database ID 設定正確。")
+        )
+
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
